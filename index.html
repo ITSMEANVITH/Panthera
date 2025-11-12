@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ABAS – 3-Text Verification</title>
+
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Lucide -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- React 18 -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+  <!-- Babel -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white">
+
+  <div id="root"></div>
+
+  <script type="text/babel" data-type="module">
+    const { useState, useEffect, useRef } = React;
+    lucide.createIcons();
+
+    function ABASDemo() {
+      const [username, setUsername] = useState('');
+      const [password, setPassword] = useState('');
+      const [isLoggedIn, setIsLoggedIn] = useState(false);
+      const [risk, setRisk] = useState(0);
+      const [alerts, setAlerts] = useState([]);
+      const [showChallenge, setShowChallenge] = useState(false);
+
+      // 3 required texts (exact match, case-insensitive)
+      const REQUIRED_TEXTS = ["dayanand", "red bull", "wings"];
+      const [currentTextIndex, setCurrentTextIndex] = useState(0);
+      const [textInput, setTextInput] = useState('');
+
+      // Behavioral tracking
+      const keystrokes = useRef([]);
+      const mouseMoves = useRef([]);
+      const lastActivity = useRef(Date.now());
+      const intervalRef = useRef(null);
+
+      const addAlert = (msg, type = 'info') => {
+        const id = Date.now();
+        setAlerts(prev => [{ id, msg, type, time: new Date().toLocaleTimeString() }, ...prev].slice(0, 10));
+      };
+
+      // ============== LOGIN ==============
+      const handleLogin = () => {
+        if (!username.trim() || !password) {
+          addAlert('Username and password are required!', 'warning');
+          return;
+        }
+        setIsLoggedIn(true);
+        setCurrentTextIndex(0);
+        setTextInput('');
+        addAlert(`Welcome ${username}! Type the first text: "${REQUIRED_TEXTS[0]}"`, 'success');
+        startMonitoring();
+      };
+
+      const handleLogout = () => {
+        setIsLoggedIn(false);
+        setRisk(0);
+        setAlerts([]);
+        setCurrentTextIndex(0);
+        setTextInput('');
+        clearInterval(intervalRef.current);
+        addAlert('Logged out.', 'info');
+      };
+
+      // ============== TEXT VERIFICATION ==============
+      const checkText = () => {
+        const typed = textInput.trim().toLowerCase();
+        const expected = REQUIRED_TEXTS[currentTextIndex].toLowerCase();
+
+        if (typed !== expected) {
+          addAlert(`Invalid! Expected: "${REQUIRED_TEXTS[currentTextIndex]}"`, 'critical');
+          addAlert('Session terminated.', 'critical');
+          handleLogout();
+          return;
+        }
+
+        addAlert(`Correct! "${REQUIRED_TEXTS[currentTextIndex]}"`, 'success');
+
+        if (currentTextIndex < REQUIRED_TEXTS.length - 1) {
+          setCurrentTextIndex(prev => prev + 1);
+          setTextInput('');
+          addAlert(`Now type: "${REQUIRED_TEXTS[currentTextIndex + 1]}"`, 'info');
+        } else {
+          addAlert('All 3 texts verified! You are fully authenticated.', 'success');
+          setRisk(r => Math.max(0, r - 30)); // Reward
+        }
+      };
+
+      // ============== SENSORS (outside inputs) ==============
+      const startMonitoring = () => {
+        let lastKeyUp = 0;
+        let lastPos = null;
+
+        const onKeyDown = (e) => {
+          if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+          const start = performance.now();
+          const onKeyUp = () => {
+            const dwell = performance.now() - start;
+            const flight = lastKeyUp ? performance.now() - lastKeyUp : 0;
+            keystrokes.current.push({ key: e.key, dwell, flight });
+            if (keystrokes.current.length > 100) keystrokes.current.shift();
+            lastKeyUp = performance.now();
+            lastActivity.current = Date.now();
+            window.removeEventListener('keyup', onKeyUp);
+          };
+          window.addEventListener('keyup', onKeyUp);
+        };
+
+        const onMouseMove = (e) => {
+          const now = Date.now();
+          if (lastPos) {
+            const dx = e.clientX - lastPos.x;
+            const dy = e.clientY - lastPos.y;
+            const dt = (now - lastPos.time) / 1000;
+            const speed = dt > 0 ? Math.hypot(dx, dy) / dt : 0;
+            mouseMoves.current.push(speed);
+            if (mouseMoves.current.length > 30) mouseMoves.current.shift();
+          }
+          lastPos = { x: e.clientX, y: e.clientY, time: now };
+          lastActivity.current = now;
+        };
+
+        document.body.addEventListener('keydown', onKeyDown);
+        document.body.addEventListener('mousemove', onMouseMove);
+
+        intervalRef.current = setInterval(() => {
+          const now = Date.now();
+          const inactive = (now - lastActivity.current) / 1000;
+
+          const embedding = new Float32Array(32);
+          for (let i = 0; i < 32; i++) embedding[i] = Math.random() * 0.2;
+
+          let baseline = window._baseline || embedding;
+          window._baseline = baseline;
+
+          let dot = 0, normA = 0, normB = 0;
+          for (let i = 0; i < 32; i++) {
+            dot += baseline[i] * embedding[i];
+            normA += baseline[i] ** 2;
+            normB += embedding[i] ** 2;
+          }
+          const dist = 1 - dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-9);
+          const anomaly = Math.min(100, dist * 180);
+
+          setRisk(prev => {
+            const decayed = Math.max(0, prev - 0.5);
+            const newRisk = Math.min(100, decayed + anomaly * 0.5);
+            if (newRisk > 80) {
+              addAlert('CRITICAL: Session locked!', 'critical');
+              handleLogout();
+            } else if (newRisk > 60 && !showChallenge) {
+              setShowChallenge(true);
+              addAlert('Re-authentication required', 'warning');
+            }
+            return newRisk;
+          });
+
+          if (dist > 0.3) {
+            for (let i = 0; i < 32; i++) {
+              baseline[i] = baseline[i] * 0.98 + embedding[i] * 0.02;
+            }
+            window._baseline = baseline;
+          }
+        }, 2000);
+
+        return () => {
+          document.body.removeEventListener('keydown', onKeyDown);
+          document.body.removeEventListener('mousemove', onMouseMove);
+          clearInterval(intervalRef.current);
+        };
+      };
+
+      // ============== UI ==============
+      if (!isLoggedIn) {
+        return (
+          <div className="min-h-screen flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md text-gray-800">
+              <div className="flex justify-center mb-6">
+                <i data-lucide="shield" className="w-12 h-12 text-purple-600"></i>
+              </div>
+              <h2 className="text-2xl font-bold text-center mb-6">Secure Login</h2>
+              <input
+                type="text"
+                placeholder="Username *"
+                className="w-full mb-3 px-4 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+              />
+              <input
+                type="password"
+                placeholder="Password *"
+                className="w-full mb-4 px-4 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+              />
+              <button
+                onClick={handleLogin}
+                className="w-full bg-purple-600 text-white py-2 rounded-lg font-semibold hover:bg-purple-700 transition"
+              >
+                Login
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      const riskLevel = risk > 80 ? 'CRITICAL' : risk > 60 ? 'HIGH' : risk > 40 ? 'MODERATE' : risk > 20 ? 'LOW' : 'SECURE';
+      const riskColor = risk > 80 ? 'bg-red-500' : risk > 60 ? 'bg-orange-500' : risk > 40 ? 'bg-yellow-500' : risk > 20 ? 'bg-blue-500' : 'bg-green-500';
+
+      const allVerified = currentTextIndex >= REQUIRED_TEXTS.length;
+
+      return (
+        <div className="p-6 max-w-6xl mx-auto">
+          <div className="space-y-6">
+
+            {/* Header */}
+            <div className="bg-white rounded-2xl shadow-xl p-6 text-gray-800 flex justify-between items-center">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-purple-600 rounded-full flex items-center justify-center text-white font-bold text-xl">
+                  {username[0].toUpperCase()}
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold">{username}</h3>
+                  <p className="text-sm text-gray-600">Session Active</p>
+                </div>
+              </div>
+              <button onClick={handleLogout} className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 flex items-center gap-2">
+                <i data-lucide="log-out" className="w-5 h-5"></i> Logout
+              </button>
+            </div>
+
+            {/* Risk */}
+            <div className="bg-white rounded-2xl shadow-xl p-6 text-gray-800">
+              <div className="flex justify-between mb-3">
+                <h3 className="font-bold flex items-center gap-2">
+                  <i data-lucide="activity" className="w-5 h-5 text-purple-600"></i> Risk
+                </h3>
+                <span className={`px-3 py-1 rounded-full text-white text-sm font-bold ${riskColor}`}>
+                  {riskLevel}
+                </span>
+              </div>
+              <div className="h-10 bg-gray-200 rounded-full overflow-hidden">
+                <div className={`${riskColor} h-full transition-all duration-500 flex items-center justify-end pr-3`}
+                     style={{ width: `${risk}%` }}>
+                  <span className="text-white font-bold">{Math.round(risk)}%</span>
+                </div>
+              </div>
+            </div>
+
+            {/* 3-Text Verification */}
+            <div className="bg-white rounded-2xl shadow-xl p-6 text-gray-800">
+              <h3 className="font-bold mb-3 flex items-center gap-2">
+                <i data-lucide="type" className="w-5 h-5 text-blue-600"></i>
+                Enter Required Text #{currentTextIndex + 1}
+              </h3>
+
+              {allVerified ? (
+                <div className="text-center py-8">
+                  <i data-lucide="check-circle" className="w-16 h-16 text-green-600 mx-auto mb-3"></i>
+                  <p className="text-xl font-bold text-green-600">All 3 Texts Verified!</p>
+                  <p className="text-gray-600">You are fully authenticated.</p>
+                </div>
+              ) : (
+                <div>
+                  <p className="mb-3 text-lg">
+                    Type: <code className="bg-gray-100 px-3 py-1 rounded font-mono">{REQUIRED_TEXTS[currentTextIndex]}</code>
+                  </p>
+                  <input
+                    type="text"
+                    placeholder="Type the text here..."
+                    className="w-full mb-3 px-4 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500"
+                    value={textInput}
+                    onChange={e => setTextInput(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && checkText()}
+                  />
+                  <button
+                    onClick={checkText}
+                    className="w-full bg-green-600 text-white py-2 rounded hover:bg-green-700"
+                  >
+                    Submit Text
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Progress */}
+            <div className="bg-white rounded-xl p-4 text-gray-800 shadow">
+              <div className="flex justify-between text-sm mb-2">
+                <span>Verification Progress</span>
+                <span>{currentTextIndex}/{REQUIRED_TEXTS.length}</span>
+              </div>
+              <div className="h-3 bg-gray-200 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-green-500 transition-all duration-500"
+                  style={{ width: `${(currentTextIndex / REQUIRED_TEXTS.length) * 100}%` }}
+                ></div>
+              </div>
+            </div>
+
+            {/* Stats */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-white rounded-xl p-5 text-gray-800 shadow-lg">
+                <div className="flex items-center gap-3">
+                  <i data-lucide="keyboard" className="w-8 h-8 text-blue-600"></i>
+                  <div>
+                    <p className="text-sm text-gray-600">Keystrokes</p>
+                    <p className="text-2xl font-bold">{keystrokes.current.length}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="bg-white rounded-xl p-5 text-gray-800 shadow-lg">
+                <div className="flex items-center gap-3">
+                  <i data-lucide="mouse" className="w-8 h-8 text-purple-600"></i>
+                  <div>
+                    <p className="text-sm text-gray-600">Mouse Events</p>
+                    <p className="text-2xl font-bold">{mouseMoves.current.length}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="bg-white rounded-xl p-5 text-gray-800 shadow-lg">
+                <div className="flex items-center gap-3">
+                  <i data-lucide="check-circle" className="w-8 h-8 text-green-600"></i>
+                  <div>
+                    <p className="text-sm text-gray-600">Status</p>
+                    <p className="text-lg font-mono">{allVerified ? 'Verified' : 'Pending'}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Events */}
+            <div className="bg-white rounded-2xl shadow-xl p-6 text-gray-800">
+              <h3 className="font-bold mb-3 flex items-center gap-2">
+                <i data-lucide="bell" className="w-5 h-5 text-orange-600"></i> Events
+              </h3>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {alerts.length === 0 ? <p className="text-gray-500 text-center py-4">No events</p> : alerts.map(a => (
+                  <div key={a.id} className={`p-3 rounded-lg border-l-4 ${
+                    a.type === 'critical' ? 'bg-red-50 border-red-500' :
+                    a.type === 'warning' ? 'bg-yellow-50 border-yellow-500' :
+                    a.type === 'success' ? 'bg-green-50 border-green-500' :
+                    'bg-blue-50 border-blue-500'
+                  }`}>
+                    <p className="font-medium">{a.msg}</p>
+                    <p className="text-xs text-gray-600">{a.time}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Challenge Modal */}
+          {showChallenge && (
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl text-center">
+                <i data-lucide="mouse-pointer" className="w-12 h-12 mx-auto text-purple-600 mb-4"></i>
+                <h3 className="text-xl font-bold mb-2">Draw a Circle</h3>
+                <div className="h-32 border-2 border-dashed border-purple-300 rounded-xl cursor-crosshair"
+                     onMouseMove={(e) => {
+                       const rect = e.currentTarget.getBoundingClientRect();
+                       const cx = rect.left + rect.width / 2;
+                       const cy = rect.top + rect.height / 2;
+                       const dx = e.clientX - cx;
+                       const dy = e.clientY - cy;
+                       if (Math.hypot(dx, dy) > 50) {
+                         setShowChallenge(false);
+                         setRisk(r => Math.max(0, r - 40));
+                         addAlert('Challenge passed!', 'success');
+                       }
+                     }}></div>
+                <button onClick={() => setShowChallenge(false)} className="mt-4 w-full py-2 bg-gray-200 rounded">Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<ABASDemo />);
+  </script>
+</body>
+</html>
